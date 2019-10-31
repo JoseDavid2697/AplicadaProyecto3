@@ -1,34 +1,92 @@
 import sys
 import csv
 import time
+from datetime import datetime
 
 from conf import postgreSQL_Connection
+from conf import mssql_connection,delete_sql_purchase_orders,delete_sql_clients,sqlite3_connection
 
 #this function insert the data via bulk load into the postgre DB
-#@file_path = path of the file to get the data
-#@table_name = table in postgre where data is gonna be inserted
-def pg_load_table(file_path, table_name):
-    '''
-    This function upload csv to a target table
-    '''
+
+def upload_csv_file(filename,table_name):
     try:
-        conn = postgreSQL_Connection()
-        print("Connecting to Database")
+        con_postgre = postgreSQL_Connection()
+        cur = con_postgre.cursor()
+        with open(filename,'r') as f:
+            #Salto de linea
+            next(f)
+            cur.copy_from(f,table_name, sep=',')
+            con_postgre.commit()
+
+            #update binnacle
+            dateTimeObj = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+            update_load_binnacle(filename,str(dateTimeObj),1)
+            #Delete process
+            delete_purchase_orders_sql()
+            delete_clients_sql()
+    except IOError as e:
+        print("Error: {0} uploading data to PostgreSQL: {1}".format(e.errno, e.strerror))
+        #update binnacle
+        update_load_binnacle(filename,str(dateTimeObj),0)
+    finally:
+        con_postgre.close()
+
+#these functions call a stored procedure to delete clients and purchase
+#orders that has been uploaded to postgre
+def delete_purchase_orders_sql():
+    try:
+        query = 'B65949_spDeletePurchaseData'
+
+        #SQL Server Connection
+        con_sql = mssql_connection()
+        procedure = delete_sql_purchase_orders(query)
+        if(len(procedure)==0):
+            sys.exit(0)
+        else:
+            print("Delete of purchase orders completed")
+
+    except IOError as e:
+        print("Error: {0} Deleting orders from SQL: {1}".format(
+            e.errno, e.strerror))
+    finally:
+        con_sql.close()
+
+def delete_clients_sql():
+    try:
+        query = 'B65949_spDeleteClientsData'
+
+        #SQL Server Connection
+        con_sql = mssql_connection()
+        procedure = delete_sql_clients(query)
+        if(len(procedure)==0):
+            sys.exit(0)
+        else:
+            print("Delete of clients data completed")
+
+    except IOError as e:
+        print("Error: {0} Deleting clients from SQL: {1}".format(
+            e.errno, e.strerror))
+    finally:
+        con_sql.close()
+
+
+#Update load binnacle in sqlite3
+def update_load_binnacle(filename,dateToSqlite,loaded):
+    try:
+        query = "INSERT INTO loader_tb(filename,date,loaded)VALUES(?,?,?)"
+        conn = sqlite3_connection()
         cur = conn.cursor()
-        f = open(file_path, "r")
-        # Truncate the table first
-        cur.execute("Truncate {} Cascade;".format(table_name))
-        print("Truncated {}".format(table_name))
-        # Load table from the file with header
-        cur.copy_expert("copy {} from STDIN CSV HEADER QUOTE'\"'".format(table_name), f)
-        cur.execute("commit;")
-        print("Loaded data into {}".format(table_name))
+        task = (filename,dateToSqlite,loaded)
+        cur.execute(query,task)
+        conn.commit()
+    except IOError as e:
+        print("Error: {0} Sqlite3: {1}".format(
+            e.errno, e.strerror))
+    finally:
+        cur.close()
         conn.close()
-        print("DB connection closed.")
 
-    except Exception as e:
-        print("Error: {}".format(str(e)))
-        sys.exit(1)
-
-
-
+#Execution
+filename='2019-10-30-224022-B65949_CLIENT_EMAIL.csv'
+table_name='b65949_client_email'
+upload_csv_file(filename,table_name)
